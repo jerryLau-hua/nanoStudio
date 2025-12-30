@@ -1,0 +1,162 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== User Management ====================
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  username  String   @unique
+  password  String   // bcrypt hashed
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  settings UserSetting?
+  sessions NotebookSession[]
+  sources  Source[]
+  checkIns CheckIn[]
+
+  @@map("users")
+}
+
+model CheckIn {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  date      DateTime @db.Date
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  // Relation
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, date])
+  @@index([userId])
+  @@map("check_ins")
+}
+
+model UserSetting {
+  id               Int     @id @default(autoincrement())
+  userId           Int     @unique @map("user_id")
+  apiKeyEncrypted  String? @map("api_key_encrypted") @db.Text
+  apiUrl           String  @default("https://api.deepseek.com/chat/completions") @map("api_url")
+  model            String  @default("deepseek-chat")
+  
+  // Relation
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+// ==================== Notebook LM ====================
+
+model NotebookSession {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  title     String   @db.VarChar(255)
+  preview   String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sources  Source[]
+  messages ChatMessage[]
+  notes    Note[]
+
+  @@index([userId])
+  @@map("notebook_sessions")
+}
+
+model Source {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  sessionId Int      @map("session_id")
+  name      String   @db.VarChar(255)
+  type      String   @db.VarChar(20) // 'pdf', 'website', 'text'
+  status    String   @db.VarChar(20) // 'parsing', 'ready', 'error'
+  content   String   @db.LongText
+  metadata  Json?    // { wordCount, errorMessage, etc. }
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session NotebookSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("sources")
+}
+
+model ChatMessage {
+  id        Int      @id @default(autoincrement())
+  sessionId Int      @map("session_id")
+  role      String   @db.VarChar(20) // 'user', 'assistant', 'system'
+  content   String   @db.LongText
+  timestamp BigInt   // Unix timestamp in milliseconds
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relation
+  session NotebookSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("chat_messages")
+}
+
+model Note {
+  id        Int      @id @default(autoincrement())
+  sessionId Int      @map("session_id")
+  title     String   @db.VarChar(255)
+  type      String   @db.VarChar(20) // 'summary', 'mindmap'
+  status    String   @db.VarChar(20) // 'generating', 'done'
+  content   Json     // Markdown text or MindMapNode structure
+  metadata  Json?    // { isPlaying, etc. }
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relation
+  session NotebookSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("notes")
+}
+
+// ==================== Code Archaeologist (Future) ====================
+
+// Uncomment when implementing Code Archaeologist features
+//
+// model CodeProject {
+//   id        Int      @id @default(autoincrement())
+//   userId    Int      @map("user_id")
+//   name      String   @db.VarChar(255)
+//   gitUrl    String?  @map("git_url")
+//   metadata  Json?
+//   createdAt DateTime @default(now()) @map("created_at")
+//   
+//   user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+//   files CodeFile[]
+//   
+//   @@index([userId])
+//   @@map("code_projects")
+// }
+//
+// model CodeFile {
+//   id        Int      @id @default(autoincrement())
+//   projectId Int      @map("project_id")
+//   name      String   @db.VarChar(500)
+//   content   String   @db.LongText
+//   analysis  Json?    // AST, call chains, AI analysis
+//   createdAt DateTime @default(now()) @map("created_at")
+//   
+//   project CodeProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+//   
+//   @@index([projectId])
+//   @@map("code_files")
+// }

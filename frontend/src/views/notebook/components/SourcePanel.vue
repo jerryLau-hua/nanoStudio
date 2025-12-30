@@ -1,0 +1,598 @@
+<template>
+  <div class="source-panel">
+    <!-- 1. 顶部头部 -->
+    <div class="panel-header">
+      <h3>来源 ({{ store.sources.length }})</h3>
+      <a-space>
+        <!-- <a-tooltip content="收起面板">
+          <a-button type="text" shape="circle" size="small" @click="emit('close')">
+            <icon-menu-fold />
+          </a-button>
+        </a-tooltip> -->
+      </a-space>
+    </div>
+
+    <!-- 1.5. 历史会话区域 -->
+    <div class="history-section">
+      <div class="history-header" @click="historyExpanded = !historyExpanded">
+        <icon-history />
+        <span>历史会话 ({{ store.sessions.length }})</span>
+        <icon-down :class="{ expanded: historyExpanded }" />
+        <a-button 
+          v-if="store.sessions.length > 0"
+          type="text" 
+          size="mini" 
+          @click.stop="store.createNewSession"
+          title="新建会话"
+        >
+          <icon-plus />
+        </a-button>
+      </div>
+      
+      <transition name="slide">
+        <div v-show="historyExpanded" class="history-list">
+          <div v-if="store.sessions.length === 0" class="history-empty">
+            暂无历史会话
+          </div>
+          <div 
+            v-for="session in store.sessions.slice(0, 10)" 
+            :key="session.id"
+            :class="['history-item', { active: session.id === store.currentSessionId }]"
+            @click="handleLoadSession(session.id)"
+          >
+            <div class="session-title">{{ session.title }}</div>
+            <div class="session-meta">
+              {{ formatTimeFromDate(session.updatedAt || session.createdAt) }} · {{ session._count?.sources || 0 }} 来源
+            </div>
+            <div class="session-actions" @click.stop>
+<a-popconfirm 
+                  content="删除此会话？" 
+                  @ok="store.deleteSession(session.id)"
+                >
+                <a-button type="text" size="mini" status="danger">
+                  <icon-delete />
+                </a-button>
+              </a-popconfirm>
+            </div>
+          </div>
+        </div>
+      </transition>
+    </div>
+
+    <!-- 2. 添加来源区域（只在没有来源时显示） -->
+    <a-card v-if="store.sources.length === 0" class="add-box" :bordered="false">
+      <a-space direction="vertical" fill size="medium">
+        <input
+            type="file"
+            ref="fileInput"
+            style="display: none"
+            accept=".pdf,.txt,.md"
+            @change="handleFileChange"
+        />
+
+        <div class="action-grid">
+          <a-button type="outline" class="action-btn" @click="triggerUpload">
+            <icon-upload />
+            <span>上传文件</span>
+          </a-button>
+          <a-button type="outline" class="action-btn" @click="textModalVisible = true">
+            <icon-file />
+            <span>文本输入</span>
+          </a-button>
+        </div>
+
+        <a-input-search
+            v-model="urlInput"
+            placeholder="粘贴网站链接 (支持 Jina)"
+            button-text="添加"
+            search-button
+            :loading="isAddingUrl"
+            @search="handleAddUrl"
+            @keydown.enter="handleAddUrl"
+        />
+      </a-space>
+    </a-card>
+
+    <!-- 文本输入对话框 -->
+    <a-modal
+        v-model:visible="textModalVisible"
+        title="添加文本内容"
+        :ok-loading="isAddingText"
+        @ok="handleAddText"
+        @cancel="textModalVisible = false"
+    >
+      <a-space direction="vertical" fill size="medium">
+        <a-input
+            v-model="textTitle"
+            placeholder="标题（可选，留空自动生成）"
+            allow-clear
+        />
+        <a-textarea
+            v-model="textContent"
+            placeholder="粘贴或输入文本内容..."
+            :auto-size="{ minRows: 8, maxRows: 15 }"
+        />
+      </a-space>
+    </a-modal>
+
+    <!-- 3. 来源列表区域 -->
+    <div class="source-list">
+      <!-- 上传进度显示 -->
+      <div v-if="store.uploadProgress.isUploading" class="loading-card">
+        <div class="loading-spinner">
+          <icon-loading spin />
+        </div>
+        <div class="loading-text">{{ store.uploadProgress.message }}</div>
+        <div class="progress-steps">
+          步骤 {{ store.uploadProgress.step }}/4
+        </div>
+      </div>
+      
+      <!-- 其他加载状态 -->
+      <div v-else-if="isProcessing" class="loading-card">
+        <div class="loading-spinner">
+          <icon-loading spin />
+        </div>
+        <div class="loading-text">{{ processingMessage }}</div>
+      </div>
+      
+      <div v-else-if="store.sources.length === 0" class="empty-state">
+        暂无来源，请添加资料
+      </div>
+
+      <transition-group name="list">
+        <div v-for="source in store.sources" :key="source.id" class="source-item">
+          <!-- 复选框区 -->
+          <a-checkbox
+              :model-value="source.isSelected"
+              @change="() => store.toggleSourceSelection(source.id)"
+              class="custom-checkbox"
+          >
+            <div class="source-content">
+              <div class="source-name text-truncate" :title="source.name">{{ source.name }}</div>
+
+              <!-- 状态栏 -->
+              <div class="source-meta">
+                <template v-if="source.status === 'parsing'">
+                  <icon-loading spin /> 解析中...
+                </template>
+                <template v-else-if="source.status === 'error'">
+                  <span class="error-text" :title="source.errorMessage">
+                    <icon-exclamation-circle-fill /> 解析失败
+                  </span>
+                </template>
+                <template v-else>
+                   <span class="meta-tag">
+                     {{ getSourceIcon(source.type) }} {{ formatWordCount(source) }}
+                   </span>
+                </template>
+              </div>
+            </div>
+          </a-checkbox>
+
+          <!-- 删除按钮 (Hover 显示) -->
+          <div class="item-actions">
+            <a-popconfirm 
+                content="确定删除此来源吗？删除后将清除相关的对话和笔记。" 
+                okText="删除"
+                cancelText="取消"
+                @ok="store.removeSource(source.id)"
+            >
+              <a-button type="text" status="danger" shape="circle" size="mini">
+                <icon-delete />
+              </a-button>
+            </a-popconfirm>
+          </div>
+        </div>
+      </transition-group>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref } from 'vue';
+import { useNotebookStore } from '@/store/notebookStore';
+import {
+  IconUpload, IconFile, IconLoading,
+  IconExclamationCircleFill, IconDelete, IconHistory, IconDown, IconPlus
+} from '@arco-design/web-vue/es/icon';
+import { Message } from '@arco-design/web-vue';
+import { sessionApi } from '@/api/session';
+
+const emit = defineEmits(['close']);
+const store = useNotebookStore();
+const fileInput = ref<HTMLInputElement | null>(null);
+const urlInput = ref('');
+const isAddingUrl = ref(false);
+const historyExpanded = ref(true);
+const textModalVisible = ref(false);
+const textTitle = ref('');
+const textContent = ref('');
+const isAddingText = ref(false);
+const isProcessing = ref(false);
+const processingMessage = ref('正在处理...');
+
+const triggerUpload = () => fileInput.value?.click();
+
+const handleFileChange = async (e: Event) => {
+  const files = (e.target as HTMLInputElement).files;
+  if (files && files.length > 0 && files[0]) {
+    const file = files[0];
+    if (fileInput.value) fileInput.value.value = '';
+    
+    try {
+      await store.addSource(file, 'pdf');
+      Message.success('文件已添加');
+    } catch (error) {
+      console.error('Failed to add file:', error);
+      Message.error('文件添加失败');
+    }
+  }
+}
+
+const handleAddUrl = async () => {
+  if(!urlInput.value) return;
+  const url = urlInput.value.trim();
+  
+  isAddingUrl.value = true;
+  try {
+    await store.addSource(url, 'website');
+    // 只有添加成功后才清空输入框
+    urlInput.value = '';
+  } catch (error) {
+    // 添加失败时保留输入内容，用户无需重新输入
+    console.error('Failed to add URL:', error);
+  } finally {
+    isAddingUrl.value = false;
+  }
+};
+
+// 处理添加文本
+const handleAddText = async () => {
+  if (!textContent.value.trim()) {
+    Message.warning('请输入文本内容');
+    return;
+  }
+  
+  // 关闭对话框并显示加载状态
+  textModalVisible.value = false;
+  isProcessing.value = true;
+  processingMessage.value = '正在处理文本内容...';
+  
+  isAddingText.value = true;
+  try {
+    const session = await sessionApi.createFromText(textTitle.value, textContent.value);
+    // 成功后清空表单
+    textTitle.value = '';
+    textContent.value = '';
+    
+    // 加载新创建的会话
+    await store.loadSessions();
+    if (session?.id) {
+      store.loadSession(session.id);
+    }
+    Message.success('文本内容已添加');
+  } catch (error: any) {
+    Message.error(error.message || '添加失败');
+    console.error('Failed to add text:', error);
+  } finally {
+    isAddingText.value = false;
+    isProcessing.value = false;
+  }
+};
+
+const getSourceIcon = (type: string) => type === 'pdf' ? '📄' : type === 'text' ? '📝' : '🌐';
+
+// 格式化字数显示
+const formatWordCount = (source: any) => {
+  const count = source.wordCount || source.content?.length || 0;
+  if (count >= 10000) return `${(count / 10000).toFixed(1)}万字`;
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k字`;
+  return `${count}字`;
+};
+
+// 历史会话相关
+const handleLoadSession = (sessionId: number) => {
+  store.loadSession(sessionId);
+  Message.success('已加载会话');
+};
+
+const formatTime = (timestamp: number) => {
+  const now = Date.now();
+  const diff = now - timestamp;
+  const min = 60 * 1000;
+  const hour = 60 * min;
+  const day = 24 * hour;
+  
+  if (diff < min) return '刚刚';
+  if (diff < hour) return `${Math.floor(diff / min)}分钟前`;
+  if (diff < day) return `${Math.floor(diff / hour)}小时前`;
+  if (diff < 7 * day) return `${Math.floor(diff / day)}天前`;
+  
+  const date = new Date(timestamp);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+};
+
+// 从 ISO 日期字符串格式化时间
+const formatTimeFromDate = (dateStr: string) => {
+  const timestamp = new Date(dateStr).getTime();
+  return formatTime(timestamp);
+};
+</script>
+
+<style scoped>
+.source-panel {
+  padding: 16px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--nb-panel-bg, #fff);
+  border-right: 1px solid var(--nb-border-color, #e5e6eb);
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-shrink: 0;
+}
+.panel-header h3 { 
+  margin: 0; 
+  font-size: 16px; 
+  color: var(--nb-text-color, #1d2129); 
+}
+
+/* 历史会话区域 */
+.history-section {
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--nb-border-color, #e5e6eb);
+  padding-bottom: 12px;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+  border-radius: 6px;
+  user-select: none;
+}
+
+.history-header:hover {
+  background: var(--nb-hover-bg, #f7f8fa);
+}
+
+.history-header span {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--nb-text-color, #1d2129);
+}
+
+.history-header .arco-icon-down {
+  transition: transform 0.3s;
+}
+
+.history-header .arco-icon-down.expanded {
+  transform: rotate(180deg);
+}
+
+.history-list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.history-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--nb-text-disabled, #86909c);
+  font-size: 13px;
+}
+
+.history-item {
+  padding: 10px 12px;
+  margin: 4px 8px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: all 0.2s;
+  border-radius: 4px;
+  position: relative;
+}
+
+.history-item:hover {
+  background: var(--nb-hover-bg, #f7f8fa);
+}
+
+.history-item.active {
+  background: var(--nb-card-bg, #f2f3f5);
+  border-left-color: #165DFF;
+}
+
+.session-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--nb-text-color, #1d2129);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-right: 30px;
+}
+
+.session-meta {
+  font-size: 11px;
+  color: var(--nb-text-disabled, #86909c);
+}
+
+.session-actions {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.history-item:hover .session-actions {
+  opacity: 1;
+}
+
+.slide-enter-active, .slide-leave-active {
+  transition: all 0.3s ease;
+  max-height: 400px;
+  overflow: hidden;
+}
+
+.slide-enter-from, .slide-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+
+.add-box {
+  margin-bottom: 16px;
+  background: var(--nb-add-box-bg, #f7f8fa);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.action-btn { 
+  display: flex; 
+  align-items: center; 
+  justify-content: center; 
+  gap: 6px; 
+  color: var(--nb-text-secondary, #4e5969); 
+  border-color: var(--nb-border-color, #e5e6eb); 
+  background: var(--nb-card-bg, white);
+}
+
+.source-list {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.empty-state { 
+  text-align: center; 
+  color: var(--nb-text-disabled, #86909c); 
+  font-size: 13px; 
+  margin-top: 40px; 
+}
+
+/* 加载中卡片样式 */
+.loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  margin: 20px 0;
+  background: var(--nb-card-bg, #f7f8fa);
+  border-radius: 8px;
+  border: 1px dashed var(--nb-border-color, #c9cdd4);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.loading-spinner {
+  font-size: 32px;
+  color: #165DFF;
+  margin-bottom: 12px;
+}
+
+.loading-text {
+  color: var(--nb-text-secondary, #4e5969);
+  font-size: 14px;
+}
+
+.progress-steps {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #165DFF;
+  font-weight: 500;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.source-item {
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--nb-item-border, #f2f3f5);
+  border-radius: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: all 0.2s;
+  background: var(--nb-card-bg, white);
+  group: 'item';
+}
+.source-item:hover { 
+  background-color: var(--nb-hover-bg, #f7f8fa); 
+  border-color: var(--nb-border-color, #e5e6eb); 
+}
+
+/* 深度选择器修改 checkbox 布局 */
+.custom-checkbox :deep(.arco-checkbox) { width: 100%; align-items: flex-start; }
+.custom-checkbox :deep(.arco-checkbox-icon) { margin-top: 2px; }
+
+.source-content { display: flex; flex-direction: column; margin-left: 8px; flex: 1; min-width: 0; }
+.source-name { 
+  font-weight: 500; 
+  font-size: 14px; 
+  color: var(--nb-text-color, #1d2129); 
+  line-height: 1.4; 
+}
+.source-meta { 
+  font-size: 12px; 
+  color: var(--nb-text-disabled, #86909c); 
+  margin-top: 4px; 
+  display: flex; 
+  align-items: center; 
+  gap: 5px;
+}
+
+.text-truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.error-text { color: #f53f3f; display: flex; align-items: center; gap: 4px; }
+
+.item-actions { opacity: 0; transition: opacity 0.2s; }
+.source-item:hover .item-actions { opacity: 1; }
+
+/* 列表动画 */
+.list-enter-active, .list-leave-active { transition: all 0.3s ease; }
+.list-enter-from, .list-leave-to { opacity: 0; transform: translateX(-20px); }
+
+/* 暗色主题直接覆盖 */
+:global(body.dark-theme) .source-panel {
+  background-color: #252526 !important;
+}
+
+:global(body.dark-theme) .add-box {
+  background: #2a2a2b !important;
+}
+
+:global(body.dark-theme) .action-btn {
+  background: #2a2a2b !important;
+  border-color: #3a3a3c !important;
+  color: #c9cdd4 !important;
+}
+
+:global(body.dark-theme) .source-item {
+  background: #2a2a2b !important;
+  border-color: #3a3a3c !important;
+}
+
+:global(body.dark-theme) .source-item:hover {
+  background: #3a3a3c !important;
+}
+
+/* 暗色主题：面板右侧边框改为黑色 */
+:global(body.dark-theme) .source-panel {
+  border-right: 1px solid #000 !important;
+}
+</style>

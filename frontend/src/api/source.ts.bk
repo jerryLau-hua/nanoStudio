@@ -1,0 +1,70 @@
+/**
+ * Source（知识源）API
+ */
+import { apiClient } from './client';
+import type { NotebookSession } from './session';
+
+export interface Source {
+    id: number;
+    userId: number;
+    sessionId: number;
+    name: string;
+    type: 'pdf' | 'website' | 'text';
+    status: 'parsing' | 'ready' | 'error';
+    content?: string;
+    metadata?: {
+        url?: string;
+        filename?: string;
+        filepath?: string;
+        pages?: number;
+        fileSize?: number;
+        wordCount?: number;
+        rag_status?: 'processing' | 'done' | 'error';
+        rag_chunks_count?: number;
+    };
+    createdAt: string;
+}
+
+export const sourceApi = {
+    /**
+     * 上传 PDF 并创建会话（后端自动解析 + RAG 处理）
+     */
+    uploadPdf: async (file: File): Promise<NotebookSession> => {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        // 使用 /sessions/from-pdf 而不是 /sources/upload-pdf
+        const response = await apiClient.upload('/sessions/from-pdf', formData);
+        const data = await response.json();
+        return data.data || data;
+    },
+
+    /**
+     * 预览 PDF（不创建会话，仅返回解析的文本）
+     */
+    previewPdf: async (file: File): Promise<{ text: string; pages: number }> => {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await apiClient.upload('/sources/preview-pdf', formData);
+        const data = await response.json();
+        return data.data || data;
+    },
+
+    /**
+     * 删除 Source（级联删除向量数据和物理文件）
+     */
+    delete: async (id: number): Promise<void> => {
+        await apiClient.delete(`/sources/${id}`);
+    },
+
+    /**
+     * 获取 Source 的 RAG 处理状态
+     */
+    getRagStatus: async (id: number): Promise<{ status: string; chunks_count?: number }> => {
+        const response = await apiClient.get(`/sources/${id}/rag-status`);
+        return response.json();
+    }
+};
+
+export default sourceApi;

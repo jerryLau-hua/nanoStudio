@@ -1,0 +1,287 @@
+### Nano Studio API Tests (Cloudflare Workers)
+### 生产环境API测试 - https://nano-back-cloudfare.apecc.workers.dev
+
+@baseUrl = https://nano-back-cloudfare.apecc.workers.dev
+@token = your-jwt-token-here
+
+###############################################################################
+### 1. 健康检查 (Health Checks)
+###############################################################################
+
+### Health Check
+GET {{base Url}}/health
+
+### Database Test
+GET {{baseUrl}}/db-test
+
+### Qdrant Vector DB Test
+GET {{baseUrl}}/qdrant-test
+
+###############################################################################
+### 2. 认证 (Authentication)
+###############################################################################
+
+### Register - 用户注册
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "username": "testuser",
+  "password": "Test123456"
+}
+
+### Login - 用户登录
+# @name login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "Test123456"
+}
+
+### Get Token from Login Response
+@token = {{login.response.body.$.data.token}}
+
+### Logout - 退出登录
+POST {{baseUrl}}/api/auth/logout
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 3. 用户管理 (User Management)
+###############################################################################
+
+### Get User Profile - 获取用户资料
+GET {{baseUrl}}/api/user/profile
+Authorization: Bearer {{token}}
+
+### Update User Profile - 更新用户资料
+PATCH {{baseUrl}}/api/user/profile
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "username": "newusername"
+}
+
+### Check-in - 每日签到
+POST {{baseUrl}}/api/user/check-in
+Authorization: Bearer {{token}}
+
+### Get Check-in Stats - 获取签到统计
+GET {{baseUrl}}/api/user/check-in/stats
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 4. 用户设置 (Settings)
+###############################################################################
+
+### Get Settings - 获取用户设置
+GET {{baseUrl}}/api/user/settings
+Authorization: Bearer {{token}}
+
+### Update Settings - 更新设置
+PUT {{baseUrl}}/api/user/settings
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "apiKey": "sk-your-openai-key",
+  "apiUrl": "https://api.openai.com/v1",
+  "model": "gpt-4"
+}
+
+###############################################################################
+### 5. 会话管理 (Session Management)
+###############################################################################
+
+### Get All Sessions - 获取所有会话
+GET {{baseUrl}}/api/sessions
+Authorization: Bearer {{token}}
+
+### Get Session by ID - 获取会话详情
+# @name getSession
+GET {{baseUrl}}/api/sessions/1
+Authorization: Bearer {{token}}
+
+### Create Session from URL - 从URL创建会话
+# @name createFromUrl
+POST {{baseUrl}}/api/sessions/from-url
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "url": "https://example.com/article"
+}
+
+### Create Session from Text - 从文本创建会话
+# @name createFromText
+POST {{baseUrl}}/api/sessions/from-text
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "我的笔记",
+  "content": "这是笔记内容..."
+}
+
+### Create Session from PDF - 从PDF创建会话
+# @name createFromPdf
+POST {{baseUrl}}/api/sessions/from-pdf
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "filename": "document.pdf",
+  "objectKey": "uploads/123_document.pdf",
+  "content": "PDF文本内容...",
+  "title": "文档标题"
+}
+
+### Update Session - 更新会话
+PATCH {{baseUrl}}/api/sessions/1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "新标题"
+}
+
+### Delete Session - 删除会话
+DELETE {{baseUrl}}/api/sessions/1
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 6. 笔记管理 (Notes)
+###############################################################################
+
+### Save Note - 保存笔记
+# @name saveNote
+POST {{baseUrl}}/api/sessions/1/notes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "思维导图",
+  "type": "mindmap",
+  "content": {
+    "id": "root",
+    "label": "核心主题",
+    "children": [
+      {"id": "1", "label": "分支1"},
+      {"id": "2", "label": "分支2"}
+    ]
+  }
+}
+
+### Save Summary Note - 保存总结笔记
+POST {{baseUrl}}/api/sessions/1/notes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "重点简报",
+  "type": "summary",
+  "content": "## 核心要点\n\n1. 要点一\n2. 要点二"
+}
+
+### Delete Note - 删除笔记
+DELETE {{baseUrl}}/api/sessions/notes/1
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 7. 知识源管理 (Knowledge Sources)
+###############################################################################
+
+### Delete Source - 删除知识源
+DELETE {{baseUrl}}/api/sources/1
+Authorization: Bearer {{token}}
+
+### Get RAG Status - 获取RAG处理状态
+GET {{baseUrl}}/api/sources/1/rag-status
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 8. 聊天对话 (Chat - SSE Stream)
+###############################################################################
+
+### Chat Completion (Streaming) - 流式聊天
+POST {{baseUrl}}/api/chat/completions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sessionId": 1,
+  "messages": [
+    {
+      "role": "user",
+      "content": "请总结这篇文档的核心内容"
+    }
+  ],
+  "stream": true
+}
+
+###############################################################################
+### 9. 文件上传 (Upload)
+###############################################################################
+
+### Get Presigned Upload URL - 获取预签名上传URL
+# @name getPresignedUrl
+POST {{baseUrl}}/api/upload/presigned-url
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "filename": "document.pdf"
+}
+
+###############################################################################
+### 测试流程示例 (Complete Workflow)
+###############################################################################
+
+### Workflow 1: 注册 → 登录 → 创建会话 → 聊天
+### Step 1: Register
+# POST {{baseUrl}}/api/auth/register
+
+### Step 2: Login & Get Token
+# POST {{baseUrl}}/api/auth/login
+
+### Step 3: Create Session from URL
+# POST {{baseUrl}}/api/sessions/from-url
+
+### Step 4: Chat with Session
+# POST {{baseUrl}}/api/chat/completions
+
+###############################################################################
+
+### Workflow 2: PDF上传流程
+### Step 1: Get Presigned URL
+# POST {{baseUrl}}/api/upload/presigned-url
+
+### Step 2: Upload PDF to MinIO (外部调用)
+# PUT <uploadUrl from step 1>
+# Content-Type: application/pdf
+# Body: <PDF file binary>
+
+### Step 3: Create Session from PDF
+# POST {{baseUrl}}/api/sessions/from-pdf
+
+### Step 4: Chat with PDF Content
+# POST {{baseUrl}}/api/chat/completions
+
+###############################################################################
+### 环境变量说明
+###############################################################################
+
+# 开发环境:
+# @baseUrl = http://localhost:8787
+
+# 生产环境:
+# @baseUrl = https://nano-back-cloudfare.apecc.workers.dev
+
+# Token获取:
+# 1. 先调用 /api/auth/login
+# 2. 从响应中提取 token
+# 3. 设置 @token 变量
+# 4. 后续请求使用: Authorization: Bearer {{token}}

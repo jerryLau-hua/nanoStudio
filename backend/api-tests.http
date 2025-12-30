@@ -1,0 +1,315 @@
+### Nano Studio API Tests (Express.js Backend)
+### 本地开发环境API测试 - http://localhost:3000
+
+@baseUrl = http://localhost:3000
+@token = your-jwt-token-here
+
+###############################################################################
+### 1. 健康检查 (Health Checks)
+###############################################################################
+
+### Health Check
+GET {{baseUrl}}/api/health
+
+### Database Connection Test
+GET {{baseUrl}}/api/health/db
+
+###############################################################################
+### 2. 认证 (Authentication)
+###############################################################################
+
+### Register - 用户注册
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "dev@example.com",
+  "username": "devuser",
+  "password": "Dev123456"
+}
+
+### Login - 用户登录
+# @name login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "dev@example.com",
+  "password": "Dev123456"
+}
+
+### Extract Token
+@token = {{login.response.body.$.token}}
+
+### Logout - 退出登录
+POST {{baseUrl}}/api/auth/logout
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 3. 用户管理 (User Management)
+###############################################################################
+
+### Get User Profile - 获取用户资料
+GET {{baseUrl}}/api/user/profile
+Authorization: Bearer {{token}}
+
+### Update User Profile - 更新用户资料
+PATCH {{baseUrl}}/api/user/profile
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "username": "newdevuser"
+}
+
+### Check-in - 每日签到
+POST {{baseUrl}}/api/user/check-in
+Authorization: Bearer {{token}}
+
+### Get Check-in Stats - 获取签到统计
+GET {{baseUrl}}/api/user/check-in/stats
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 4. 用户设置 (Settings)
+###############################################################################
+
+### Get Settings - 获取用户设置
+GET {{baseUrl}}/api/user/settings
+Authorization: Bearer {{token}}
+
+### Update Settings - 更新设置
+PUT {{baseUrl}}/api/user/settings
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "apiKey": "sk-your-openai-key",
+  "apiUrl": "https://api.openai.com/v1",
+  "model": "gpt-4"
+}
+
+###############################################################################
+### 5. 会话管理 (Session Management)
+###############################################################################
+
+### Get All Sessions - 获取所有会话
+GET {{baseUrl}}/api/sessions
+Authorization: Bearer {{token}}
+
+### Get Session by ID - 获取会话详情
+GET {{baseUrl}}/api/sessions/1
+Authorization: Bearer {{token}}
+
+### Create Session from URL - 从URL创建会话
+# @name createSession
+POST {{baseUrl}}/api/sessions/from-url
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "url": "https://example.com/article"
+}
+
+@sessionId = {{createSession.response.body.$.data.id}}
+
+### Create Session from Text - 从文本创建会话
+POST {{baseUrl}}/api/sessions/from-text
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "开发笔记",
+  "content": "本地开发测试内容..."
+}
+
+### Create Session from PDF - 从PDF创建会话
+POST {{baseUrl}}/api/sessions/from-pdf
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "filename": "test.pdf",
+  "objectKey": "uploads/1_test.pdf",
+  "content": "测试PDF内容...",
+  "title": "测试文档"
+}
+
+### Update Session - 更新会话
+PATCH {{baseUrl}}/api/sessions/{{sessionId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "更新后的标题"
+}
+
+### Delete Session - 删除会话
+DELETE {{baseUrl}}/api/sessions/{{sessionId}}
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 6. 笔记管理 (Notes)
+###############################################################################
+
+### Save Mindmap Note - 保存思维导图
+POST {{baseUrl}}/api/sessions/1/notes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "开发思维导图",
+  "type": "mindmap",
+  "content": {
+    "id": "root",
+    "label": "项目架构",
+    "children": [
+      {"id": "1", "label": "前端"},
+      {"id": "2", "label": "后端"},
+      {"id": "3", "label": "数据库"}
+    ]
+  }
+}
+
+### Save Summary Note - 保存总结
+POST {{baseUrl}}/api/sessions/1/notes
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "title": "开发总结",
+  "type": "summary",
+  "content": "## 今日进度\n\n- 完成API开发\n- 数据库优化"
+}
+
+### Delete Note - 删除笔记
+DELETE {{baseUrl}}/api/sessions/notes/1
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 7. 知识源管理 (Knowledge Sources)
+###############################################################################
+
+### Get Session Sources - 获取会话的知识源
+GET {{baseUrl}}/api/sources/session/1
+Authorization: Bearer {{token}}
+
+### Delete Source - 删除知识源
+DELETE {{baseUrl}}/api/sources/1
+Authorization: Bearer {{token}}
+
+### Get RAG Status - 获取RAG处理状态
+GET {{baseUrl}}/api/sources/1/rag-status
+Authorization: Bearer {{token}}
+
+###############################################################################
+### 8. 聊天对话 (Chat)
+###############################################################################
+
+### Chat Completion - 聊天对话
+POST {{baseUrl}}/api/chat/completions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sessionId": 1,
+  "messages": [
+    {
+      "role": "user",
+      "content": "请总结这篇文档"
+    }
+  ],
+  "stream": true
+}
+
+###############################################################################
+### 9. 文件上传 (Upload)
+###############################################################################
+
+### Get Presigned Upload URL - 获取预签名上传URL
+POST {{baseUrl}}/api/upload/presigned-url
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "filename": "test-document.pdf"
+}
+
+### Server-side Upload (Multipart) - 服务器端上传
+POST {{baseUrl}}/api/upload
+Authorization: Bearer {{token}}
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary
+
+------WebKitFormBoundary
+Content-Disposition: form-data; name="file"; filename="test.pdf"
+Content-Type: application/pdf
+
+< ./test.pdf
+------WebKitFormBoundary--
+
+###############################################################################
+### 本地开发测试流程
+###############################################################################
+
+### Workflow 1: 快速测试注册登录流程
+### Step 1: Register new user
+# POST {{baseUrl}}/api/auth/register
+
+### Step 2: Login and get token
+# POST {{baseUrl}}/api/auth/login
+
+### Step 3: Get profile
+# GET {{baseUrl}}/api/user/profile
+
+###############################################################################
+
+### Workflow 2: PDF 完整测试流程
+### Step 1: Login and get token
+# POST {{baseUrl}}/api/auth/login
+
+### Step 2: Get presigned URL
+# POST {{baseUrl}}/api/upload/presigned-url
+
+### Step 3: Upload to MinIO (外部工具)
+# PUT <presignedUrl>
+
+### Step 4: Create session from PDF
+# POST {{baseUrl}}/api/sessions/from-pdf
+
+### Step 5: Chat with PDF
+# POST {{baseUrl}}/api/chat/completions
+
+###############################################################################
+
+### Workflow 3: URL知识源测试
+### Step 1: Create session from URL
+# POST {{baseUrl}}/api/sessions/from-url
+
+### Step 2: Get session details (verify source)
+# GET {{baseUrl}}/api/sessions/{{sessionId}}
+
+### Step 3: Chat with URL content
+# POST {{baseUrl}}/api/chat/completions
+
+###############################################################################
+### 环境切换说明
+###############################################################################
+
+# 本地开发:
+# @baseUrl = http://localhost:3000
+
+# 私有服务器:
+# @baseUrl = https://api.yourdomain.com
+
+# Cloudflare Workers (对比测试):
+# @baseUrl = https://nano-back-cloudfare.apecc.workers.dev
+
+###############################################################################
+### 调试建议
+###############################################################################
+
+# 1. 使用 REST Client 插件 (VS Code)
+# 2. 检查终端日志查看详细错误
+# 3. 使用 Prisma Studio 查看数据库: npm run db:studio
+# 4. MinIO Web Console: http://localhost:9000
+# 5. Qdrant Dashboard: http://localhost:6333/dashboard

@@ -1,0 +1,623 @@
+﻿import prisma from '../config/database';
+import { AppError } from '../middleware/errorHandler';
+import logger from '../utils/logger';
+import * as chunkingService from './chunking.service';
+import * as embeddingService from './embedding.service';
+import * as vectorService from './vector.service';
+import * as jinaService from './jina.service';
+
+/**
+ * 会话管理服务
+ */
+
+/**
+ * 创建新会话
+ */
+export const createSession = async (userId: number, title?: string) => {
+    const session = await prisma.notebookSession.create({
+        data: {
+            userId,
+            title: title || '新会话',
+            preview: ''
+        },
+        select: {
+            id: true,
+            title: true,
+            preview: true,
+            createdAt: true,
+            updatedAt: true
+        }
+    });
+
+    return session;
+};
+
+/**
+ * 获取用户的所有会话
+ */
+export const getUserSessions = async (userId: number) => {
+    const sessions = await prisma.notebookSession.findMany({
+        where: { userId },
+        orderBy: { updatedAt: 'desc' },
+        select: {
+            id: true,
+            title: true,
+            preview: true,
+            createdAt: true,
+            updatedAt: true,
+            _count: {
+                select: {
+                    sources: true,
+                    messages: true
+                }
+            }
+        }
+    });
+
+    return sessions;
+};
+
+/**
+ * 获取会话详情（包含知识源和消息）
+ */
+export const getSessionById = async (sessionId: number, userId: number) => {
+    const session = await prisma.notebookSession.findFirst({
+        where: {
+            id: sessionId,
+            userId
+        },
+        include: {
+            sources: {
+                orderBy: { createdAt: 'asc' },
+                select: {
+                    id: true,
+                    name: true,
+                    type: true,
+                    status: true,
+                    content: true,
+                    metadata: true,
+                    createdAt: true
+                }
+            },
+            messages: {
+                orderBy: { timestamp: 'asc' },
+                select: {
+                    id: true,
+                    role: true,
+                    content: true,
+                    timestamp: true,
+                    createdAt: true
+                }
+            },
+            notes: {
+                orderBy: { createdAt: 'desc' },
+                select: {
+                    id: true,
+                    title: true,
+                    type: true,
+                    status: true,
+                    content: true,
+                    createdAt: true
+                }
+            }
+        }
+    });
+
+    if (!session) {
+        throw new AppError('会话不存在或无权访问', 404);
+    }
+
+    // 将 BigInt 类型的 timestamp 转换为 Number，以支持 JSON 序列化
+    const serializedSession = {
+        ...session,
+        messages: session.messages.map(msg => ({
+            ...msg,
+            timestamp: Number(msg.timestamp)
+        }))
+    };
+
+    return serializedSession;
+};
+
+/**
+ * 更新会话（重命名）
+ */
+export const updateSession = async (
+    sessionId: number,
+    userId: number,
+    data: { title?: string; preview?: string }
+) => {
+    // 先检查权限
+    const session = await prisma.notebookSession.findFirst({
+        where: { id: sessionId, userId }
+    });
+
+    if (!session) {
+        throw new AppError('会话不存在或无权访问', 404);
+    }
+
+    // 更新
+    const updated = await prisma.notebookSession.update({
+        where: { id: sessionId },
+        data: {
+            title: data.title,
+            preview: data.preview,
+            updatedAt: new Date()
+        },
+        select: {
+            id: true,
+            title: true,
+            preview: true,
+            createdAt: true,
+            updatedAt: true
+        }
+    });
+
+    return updated;
+};
+
+/**
+ * 删除会话（级联删除知识源和消息）
+ */
+export const deleteSession = async (sessionId: number, userId: number) => {
+    // 检查权限
+    const session = await prisma.notebookSession.findFirst({
+        where: { id: sessionId, userId }
+    });
+
+    if (!session) {
+        throw new AppError('会话不存在或无权访问', 404);
+    }
+
+    // Prisma 会根据 schema 中的 onDelete: Cascade 自动删除关联数据
+    await prisma.notebookSession.delete({
+        where: { id: sessionId }
+    });
+
+    // 删除向量数据（按sessionId删除所有sources的vectors）
+    // 注意：deleteSourceVectors 删除单个source，这里需要循环
+    // 或者直接注释掉，因为Prisma的cascade会删除sources
+
+    return { success: true, message: '会话已删除' };
+};
+
+/**
+ * 从网址创建会话（一步完成：创建session + 添加source）
+ * 适配前端流程：点击网址条目 -> 创建带知识源的会话
+ */
+export const createSessionFromWebsite = async (
+    userId: number,
+    url: string
+) => {
+    try {
+        // 0. 检查是否已存在相同URL的source
+        const existingSource = await prisma.source.findFirst({
+            where: {
+                userId,
+                type: 'website',
+                metadata: {
+                    path: '$.url',
+                    equals: url
+                }
+            },
+            select: { id: true, sessionId: true }
+        });
+        if (existingSource && existingSource.sessionId) {
+            logger.info(`URL already exists, returning session: ${existingSource.sessionId}`);
+            return getSessionById(existingSource.sessionId, userId);
+        }
+
+        // 1. 抓取网页内容
+        logger.info(`Fetching web content from: ${url}`);
+        let webContent = '';
+        let webTitle = '';
+
+        try {
+            // fetchWebContent 返回原始内容
+            const rawContent = await jinaService.fetchWebContent(url);
+            logger.info(`Raw content length: ${rawContent.length}`);
+
+            // 先从原始内容提取标题
+            webTitle = jinaService.extractTitle(rawContent);
+            logger.info(`Extracted title: ${webTitle}`);
+
+            // 再清理内容
+            webContent = jinaService.cleanWebContent(rawContent);
+            logger.info(`Cleaned content length: ${webContent.length}`);
+        } catch (fetchError) {
+            logger.error(`Failed to fetch web content from ${url}:`, fetchError);
+        }
+
+        // 如果没有提取到有效标题，从URL提取
+        if (!webTitle || webTitle === '未命名网页') {
+            try {
+                const urlObj = new URL(url);
+                const pathPart = urlObj.pathname.split('/').filter(Boolean).pop();
+                webTitle = pathPart ? decodeURIComponent(pathPart) : urlObj.hostname;
+            } catch {
+                webTitle = url;
+            }
+        }
+
+        // 2. 创建会话
+        const session = await prisma.notebookSession.create({
+            data: {
+                userId,
+                title: webTitle,
+                preview: webContent.substring(0, 200)
+            }
+        });
+
+        // 3. 添加网页作为知识源（带内容）
+        const source = await prisma.source.create({
+            data: {
+                userId,
+                sessionId: session.id,
+                name: webTitle,
+                type: 'website',
+                status: webContent ? 'parsing' : 'error',
+                content: webContent,
+                metadata: {
+                    url,
+                    wordCount: webContent.length,
+                    fetchedAt: new Date().toISOString()
+                }
+            }
+        });
+
+        // 4. RAG: 分块和向量化（只有有内容时才处理）
+        if (webContent) {
+            try {
+                await processRAGForSource(source.id, '', 'website');
+            } catch (ragError) {
+                logger.error(`RAG processing failed for source ${source.id}:`, ragError);
+                await prisma.source.update({
+                    where: { id: source.id },
+                    data: { status: 'error', metadata: { ...source.metadata as object, error: 'RAG processing failed' } }
+                });
+            }
+        }
+
+        return getSessionById(session.id, userId);
+    } catch (error) {
+        logger.error('Failed to create session from website:', error);
+        throw error;
+    }
+};
+
+/**
+ * 从 PDF 创建会话（一步完成：创建session + 添加source）
+ */
+export const createSessionFromPdf = async (
+    userId: number,
+    filename: string,
+    filepath: string
+) => {
+    try {
+        // 创建会话
+        const session = await prisma.notebookSession.create({
+            data: {
+                userId,
+                title: filename,
+                preview: ''
+            }
+        });
+
+        // 添加 PDF 知识源
+        const source = await prisma.source.create({
+            data: {
+                userId,
+                sessionId: session.id,
+                name: filename,
+                type: 'pdf',
+                status: 'parsing',
+                content: '',
+                metadata: {
+                    filepath,
+                    wordCount: 0
+                }
+            }
+        });
+
+        logger.info(`Created PDF source ${source.id} for session ${session.id}`);
+
+        // RAG: 分块和向量化（同步等待完成）
+        try {
+            await processRAGForSource(source.id, filepath, 'pdf');
+        } catch (ragError) {
+            logger.error(`RAG processing failed for source ${source.id}:`, ragError);
+            await prisma.source.update({
+                where: { id: source.id },
+                data: {
+                    status: 'error',
+                    metadata: { error: 'RAG processing failed' }
+                }
+            });
+        }
+
+        return getSessionById(session.id, userId);
+    } catch (error) {
+        logger.error('Failed to create session from PDF:', error);
+        throw error;
+    }
+};
+
+/**
+ * 从 PDF Buffer 创建会话（使用MinIO存储）
+ */
+export const createSessionFromPdfBuffer = async (
+    userId: number,
+    filename: string,
+    buffer: Buffer
+) => {
+    try {
+        // 导入 MinIO 和 PDF 服务
+        const minioService = await import('./minio.service');
+        const pdfService = await import('./pdf.service');
+
+        // 从 Buffer 提取 PDF 内容和标题
+        const content = await pdfService.extractTextFromPDF(buffer);
+        const title = await pdfService.extractPDFTitle(buffer, filename);
+
+        // 上传到 MinIO
+        const objectKey = minioService.generateObjectKey(userId, filename);
+        await minioService.uploadFile(buffer, objectKey, 'application/pdf');
+
+        logger.info(`PDF uploaded to MinIO: ${objectKey}`);
+
+        // 创建会话
+        const session = await prisma.notebookSession.create({
+            data: {
+                userId,
+                title: title,
+                preview: content.substring(0, 200)
+            }
+        });
+
+        // 添加 PDF 知识源（带内容和MinIO路径）
+        const source = await prisma.source.create({
+            data: {
+                userId,
+                sessionId: session.id,
+                name: filename,
+                type: 'pdf',
+                status: 'parsing',
+                content: content,
+                metadata: {
+                    objectKey,  // MinIO对象键
+                    wordCount: content.length,
+                    uploadedAt: new Date().toISOString()
+                }
+            }
+        });
+
+        logger.info(`Created PDF source ${source.id} for session ${session.id} with MinIO storage`);
+
+        // RAG: 分块和向量化（内容已经提取）
+        try {
+            await processRAGForSource(source.id, '', 'pdf');
+        } catch (ragError) {
+            logger.error(`RAG processing failed for source ${source.id}:`, ragError);
+            await prisma.source.update({
+                where: { id: source.id },
+                data: {
+                    status: 'error',
+                    metadata: { ...source.metadata as object, error: 'RAG processing failed' }
+                }
+            });
+        }
+
+        return getSessionById(session.id, userId);
+    } catch (error) {
+        logger.error('Failed to create session from PDF buffer:', error);
+        throw error;
+    }
+};
+
+/**
+ * 从文本创建会话（一步完成：创建session + 添加source + RAG）
+ */
+export const createSessionFromText = async (
+    userId: number,
+    title: string,
+    content: string
+) => {
+    try {
+        if (!content || content.trim().length === 0) {
+            throw new AppError('文本内容不能为空', 400);
+        }
+
+        const finalTitle = title?.trim() || `文本笔记 ${new Date().toLocaleDateString('zh-CN')}`;
+        const preview = content.substring(0, 200);
+
+        // 创建会话
+        const session = await prisma.notebookSession.create({
+            data: {
+                userId,
+                title: finalTitle,
+                preview
+            }
+        });
+
+        // 添加文本知识源
+        const source = await prisma.source.create({
+            data: {
+                userId,
+                sessionId: session.id,
+                name: finalTitle,
+                type: 'text',
+                status: 'parsing',
+                content: content,
+                metadata: {
+                    wordCount: content.length,
+                    addedAt: new Date().toISOString()
+                }
+            }
+        });
+
+        logger.info(`Created text source ${source.id} for session ${session.id}, ${content.length} chars`);
+
+        // RAG: 分块和向量化
+        try {
+            await processRAGForSource(source.id, '', 'text');
+        } catch (ragError) {
+            logger.error(`RAG processing failed for source ${source.id}:`, ragError);
+            await prisma.source.update({
+                where: { id: source.id },
+                data: {
+                    status: 'error',
+                    metadata: { ...source.metadata as object, error: 'RAG processing failed' }
+                }
+            });
+        }
+
+        return getSessionById(session.id, userId);
+    } catch (error) {
+        logger.error('Failed to create session from text:', error);
+        throw error;
+    }
+};
+
+/**
+ * RAG 处理：分块和向量化
+ * 异步处理，不阻塞主流程
+ */
+const processRAGForSource = async (sourceId: number, filepath: string, type: 'pdf' | 'website' | 'text') => {
+    try {
+        let source = await prisma.source.findUnique({ where: { id: sourceId } });
+        if (!source) return;
+
+        logger.info(`Starting RAG processing for source ${sourceId}`);
+
+        // 对于 PDF 类型，需要先提取内容
+        let content = source.content || '';
+        if (type === 'pdf' && !content && filepath) {
+            try {
+                const pdfService = await import('./pdf.service');
+                content = await pdfService.extractTextFromPDF(filepath);
+                logger.info(`Extracted ${content.length} chars from PDF for source ${sourceId}`);
+
+                // 更新 source 的 content
+                await prisma.source.update({
+                    where: { id: sourceId },
+                    data: {
+                        content,
+                        metadata: {
+                            ...(source.metadata as object || {}),
+                            wordCount: content.length
+                        }
+                    }
+                });
+            } catch (pdfError) {
+                logger.error(`Failed to extract PDF content for source ${sourceId}:`, pdfError);
+            }
+        }
+
+        // 1. 文本分块
+        const chunks = chunkingService.getRecommendedChunks(content, type as any);
+        logger.info(`Generated ${chunks.length} chunks for source ${sourceId}`);
+
+        // 如果没有任何分块，跳过向量化但标记为成功
+        if (chunks.length === 0) {
+            logger.warn(`No chunks generated for source ${sourceId}, content may be empty`);
+            const existingMetadata = (source.metadata as any) || {};
+            await prisma.source.update({
+                where: { id: sourceId },
+                data: {
+                    metadata: {
+                        ...existingMetadata,
+                        chunksCount: 0,
+                        ragProcessed: true,
+                        processedAt: new Date().toISOString(),
+                        noContent: true
+                    },
+                    status: 'ready'
+                }
+            });
+            logger.info(`Source ${sourceId} marked as ready (no content to process)`);
+            return;
+        }
+
+        // 2. 批量生成向量
+        const embeddings = await embeddingService.batchGenerateEmbeddings(chunks);
+        logger.info(`Generated ${embeddings.length} embeddings for source ${sourceId}`);
+
+        // 3. 存储到向量数据库
+        await vectorService.addChunks(sourceId, chunks, embeddings);
+
+        // 4. 更新 source metadata（合并模式）
+        const existingMetadata = (source.metadata as any) || {};
+        const existingSource = await prisma.source.findUnique({
+            where: { id: sourceId },
+            select: { metadata: true }
+        });
+
+        await prisma.source.update({
+            where: { id: sourceId },
+            data: {
+                metadata: {
+                    ...existingMetadata,
+                    chunksCount: chunks.length,
+                    ragProcessed: true,
+                    processedAt: new Date().toISOString()
+                },
+                status: 'ready'
+            }
+        });
+
+        logger.info(`RAG processing completed for source ${sourceId}`);
+    } catch (error) {
+        logger.error(`RAG processing failed for source ${sourceId}:`, error);
+        throw error;
+    }
+};
+
+/**
+ * 保存笔记
+ */
+export const saveNote = async (
+    sessionId: number,
+    userId: number,
+    noteData: {
+        title: string;
+        type: 'summary' | 'mindmap';
+        content: any;
+    }
+) => {
+    const session = await prisma.notebookSession.findFirst({
+        where: { id: sessionId, userId }
+    });
+
+    if (!session) {
+        throw new AppError('会话不存在或无权访问', 404);
+    }
+
+    return await prisma.note.create({
+        data: {
+            sessionId,
+            title: noteData.title,
+            type: noteData.type,
+            status: 'done',
+            content: noteData.content,
+            metadata: {}
+        }
+    });
+};
+
+/**
+ * 删除笔记
+ */
+export const deleteNote = async (noteId: number, userId: number) => {
+    const note = await prisma.note.findFirst({
+        where: { id: noteId },
+        include: { session: true }
+    });
+
+    if (!note || note.session.userId !== userId) {
+        throw new AppError('笔记不存在或无权访问', 404);
+    }
+
+    return await prisma.note.delete({
+        where: { id: noteId }
+    });
+};
